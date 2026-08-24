@@ -114,9 +114,248 @@ jobs:
           sudo systemctl status xrdp --no-pager
 
       # --------------------------------------------------
-      # 7. Install Tailscale
+      # 7. Install PostgreSQL
       # --------------------------------------------------
-      - name: 7. Install Tailscale
+      - name: 7. Install PostgreSQL
+        run: |
+          sudo apt-get update
+
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            postgresql \
+            postgresql-contrib
+
+          sudo systemctl enable postgresql
+          sudo systemctl start postgresql
+
+          echo "PostgreSQL status:"
+          sudo systemctl is-active postgresql
+
+          echo "PostgreSQL version:"
+          sudo -u postgres psql --version
+
+      # --------------------------------------------------
+      # 8. Create PostgreSQL role for Odoo
+      # --------------------------------------------------
+      - name: 8. Configure PostgreSQL for Odoo
+        run: |
+          echo "Checking PostgreSQL roles..."
+
+          if sudo -u postgres psql -tAc \
+            "SELECT 1 FROM pg_roles WHERE rolname='odooadmin'" | grep -q 1
+          then
+            echo "Role odooadmin already exists."
+          else
+            echo "Creating role odooadmin..."
+
+            sudo -u postgres psql -c \
+              "CREATE ROLE odooadmin WITH LOGIN CREATEDB PASSWORD 'odooadmin';"
+          fi
+
+          echo ""
+          echo "PostgreSQL roles:"
+          sudo -u postgres psql -c "\du"
+
+      # --------------------------------------------------
+      # 9. Install Odoo 19 dependencies
+      # --------------------------------------------------
+      - name: 9. Install Odoo 19 dependencies
+        run: |
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            git \
+            python3-dev \
+            python3-venv \
+            python3-pip \
+            build-essential \
+            libxml2-dev \
+            libxslt1-dev \
+            zlib1g-dev \
+            libsasl2-dev \
+            libldap2-dev \
+            libssl-dev \
+            libjpeg-dev \
+            libpq-dev \
+            libffi-dev \
+            libjpeg8-dev \
+            liblcms2-dev \
+            libblas-dev \
+            libatlas-base-dev \
+            npm \
+            node-less \
+            libfreetype6-dev \
+            libharfbuzz-dev \
+            libfribidi-dev \
+            libxcb1-dev \
+            wkhtmltopdf
+
+      # --------------------------------------------------
+      # 10. Create Odoo user and directories
+      # --------------------------------------------------
+      - name: 10. Create Odoo environment
+        run: |
+          if id odoo >/dev/null 2>&1; then
+            echo "Odoo user already exists."
+          else
+            sudo useradd \
+              --system \
+              --home-dir /opt/odoo \
+              --create-home \
+              --shell /bin/bash \
+              odoo
+          fi
+
+          sudo mkdir -p /opt/odoo
+          sudo mkdir -p /opt/odoo/custom-addons
+          sudo mkdir -p /opt/odoo/.local/share/Odoo/filestore
+
+          sudo chown -R odoo:odoo /opt/odoo
+
+      # --------------------------------------------------
+      # 11. Download Odoo 19
+      # --------------------------------------------------
+      - name: 11. Install Odoo 19
+        run: |
+          sudo -u odoo git clone \
+            --depth 1 \
+            --branch 19.0 \
+            https://github.com/odoo/odoo.git \
+            /opt/odoo/odoo
+
+          echo "Odoo source:"
+          sudo -u odoo git -C /opt/odoo/odoo rev-parse --short HEAD
+
+      # --------------------------------------------------
+      # 12. Create Python virtual environment
+      # --------------------------------------------------
+      - name: 12. Create Odoo Python environment
+        run: |
+          sudo -u odoo python3 -m venv /opt/odoo/venv
+
+          sudo -u odoo /opt/odoo/venv/bin/pip install \
+            --upgrade pip setuptools wheel
+
+          sudo -u odoo /opt/odoo/venv/bin/pip install \
+            -r /opt/odoo/odoo/requirements.txt
+
+      # --------------------------------------------------
+      # 13. Configure Odoo 19
+      # --------------------------------------------------
+      - name: 13. Configure Odoo
+        run: |
+          sudo tee /etc/odoo.conf > /dev/null <<'EOF'
+          [options]
+
+          admin_passwd = vahid123
+
+          db_host = 127.0.0.1
+          db_port = 5432
+          db_user = odooadmin
+          db_password = odooadmin
+
+          addons_path = /opt/odoo/odoo/addons,/opt/odoo/custom-addons
+
+          data_dir = /opt/odoo/.local/share/Odoo
+
+          logfile = /var/log/odoo/odoo.log
+          log_level = info
+
+          http_port = 8069
+          proxy_mode = False
+          list_db = True
+          EOF
+
+          sudo mkdir -p /var/log/odoo
+          sudo touch /var/log/odoo/odoo.log
+          sudo chown -R odoo:odoo /var/log/odoo
+
+          sudo chown root:odoo /etc/odoo.conf
+          sudo chmod 640 /etc/odoo.conf
+
+      # --------------------------------------------------
+      # 14. Create Odoo systemd service
+      # --------------------------------------------------
+      - name: 14. Create Odoo service
+        run: |
+          sudo tee /etc/systemd/system/odoo.service > /dev/null <<'EOF'
+          [Unit]
+          Description=Odoo 19
+          Documentation=https://www.odoo.com
+          After=network.target postgresql.service
+          Requires=postgresql.service
+
+          [Service]
+          Type=simple
+          User=odoo
+          Group=odoo
+
+          ExecStart=/opt/odoo/venv/bin/python /opt/odoo/odoo/odoo-bin -c /etc/odoo.conf
+
+          Restart=on-failure
+          RestartSec=5
+
+          KillMode=mixed
+          TimeoutStopSec=30
+
+          [Install]
+          WantedBy=multi-user.target
+          EOF
+
+          sudo systemctl daemon-reload
+          sudo systemctl enable odoo
+
+      # --------------------------------------------------
+      # 15. Start Odoo
+      # --------------------------------------------------
+      - name: 15. Start Odoo
+        run: |
+          sudo systemctl start odoo
+
+          sleep 10
+
+          echo "Odoo service:"
+          sudo systemctl is-active odoo
+
+          echo ""
+          echo "Odoo port:"
+          sudo ss -lntp | grep 8069 || true
+
+          echo ""
+          echo "Odoo HTTP test:"
+          curl -I http://127.0.0.1:8069 || true
+
+      # --------------------------------------------------
+      # 16. Verify Odoo configuration
+      # --------------------------------------------------
+      - name: 16. Verify Odoo 19
+        run: |
+          echo "=========================================="
+          echo "Odoo version:"
+          echo "=========================================="
+
+          sudo -u odoo /opt/odoo/venv/bin/python \
+            /opt/odoo/odoo/odoo-bin \
+            --version
+
+          echo ""
+          echo "=========================================="
+          echo "Database configuration:"
+          echo "=========================================="
+
+          sudo grep -E \
+            '^(db_host|db_port|db_user|addons_path|data_dir|http_port)' \
+            /etc/odoo.conf
+
+          echo ""
+          echo "=========================================="
+          echo "Filestore:"
+          echo "=========================================="
+
+          sudo ls -lah /opt/odoo/.local/share/Odoo
+          sudo ls -lah /opt/odoo/.local/share/Odoo/filestore
+
+      # --------------------------------------------------
+      # 17. Install Tailscale
+      # --------------------------------------------------
+      - name: 17. Install Tailscale
         env:
           TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
         run: |
@@ -129,13 +368,13 @@ jobs:
           sleep 5
 
       # --------------------------------------------------
-      # 8. Show connection information
+      # 18. Connection Information
       # --------------------------------------------------
-      - name: 8. Connection Information
+      - name: 18. Connection Information
         run: |
           echo ""
           echo "======================================================"
-          echo "        LINUX ODOO LAB IS READY"
+          echo "        LINUX ODOO 19 LAB IS READY"
           echo "======================================================"
 
           echo ""
@@ -155,21 +394,40 @@ jobs:
           echo "3389"
 
           echo ""
-          echo "======================================================"
+          echo "ODOO:"
+          echo "http://TAILSCALE-IP:8069"
 
+          echo ""
+          echo "ODOO VERSION:"
+          sudo -u odoo /opt/odoo/venv/bin/python \
+            /opt/odoo/odoo/odoo-bin \
+            --version
+
+          echo ""
           echo "XRDP STATUS:"
           sudo systemctl is-active xrdp
+
+          echo ""
+          echo "ODOO STATUS:"
+          sudo systemctl is-active odoo
+
+          echo ""
+          echo "POSTGRESQL STATUS:"
+          sudo systemctl is-active postgresql
 
           echo ""
           echo "TAILSCALE STATUS:"
           sudo tailscale status
 
+          echo ""
+          echo "======================================================"
+
       # --------------------------------------------------
-      # 9. Keep Runner Alive
+      # 19. Keep Runner Alive
       # --------------------------------------------------
-      - name: 9. Keep Server Alive
+      - name: 19. Keep Server Alive
         run: |
           for i in {1..360}; do
-            echo "[$i/360] Linux Odoo Lab is running..."
+            echo "[$i/360] Linux Odoo 19 Lab is running..."
             sleep 60
           done
