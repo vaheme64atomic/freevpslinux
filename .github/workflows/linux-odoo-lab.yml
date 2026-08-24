@@ -658,65 +658,155 @@ jobs:
           sudo systemctl is-active odoo
 
       # =========================================================
-      # 20. Install GitHub Self-hosted Runner
+      # 20. Configure GitHub Self-hosted Runner
       # =========================================================
       - name: 20. Configure GitHub Self-hosted Runner
         env:
-          RUNNER_TOKEN: ${{ secrets.RUNNER_TOKEN }}
+          GH_TOKEN: ${{ secrets.RUNNER_MANAGER_TOKEN }}
+          REPO: ${{ github.repository }}
         run: |
           set -e
 
+          echo "======================================"
+          echo "Configuring GitHub Self-hosted Runner"
+          echo "======================================"
+
           RUNNER_DIR="/opt/actions-runner"
+          RUNNER_NAME="github-linux-odoo"
 
-          echo "Creating GitHub Actions runner..."
+          echo ""
+          echo "Repository:"
+          echo "$REPO"
 
+          # --------------------------------------------------
+          # 20.1 Install GitHub CLI if necessary
+          # --------------------------------------------------
+          if ! command -v gh >/dev/null 2>&1; then
+            echo "Installing GitHub CLI..."
+
+            sudo apt-get update
+            sudo apt-get install -y gh
+          fi
+
+          echo ""
+          echo "GitHub CLI:"
+          gh --version
+
+          # --------------------------------------------------
+          # 20.2 Get fresh runner registration token
+          # --------------------------------------------------
+          echo ""
+          echo "Requesting fresh GitHub runner registration token..."
+
+          REG_TOKEN=$(gh api \
+            --method POST \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/${REPO}/actions/runners/registration-token" \
+            --jq '.token')
+
+          if [ -z "$REG_TOKEN" ]; then
+            echo "ERROR: Failed to obtain runner registration token."
+            exit 1
+          fi
+
+          echo "Fresh registration token obtained."
+
+          # --------------------------------------------------
+          # 20.3 Prepare runner directory
+          # --------------------------------------------------
+          echo ""
+          echo "Preparing runner directory..."
+
+          sudo rm -rf "$RUNNER_DIR"
           sudo mkdir -p "$RUNNER_DIR"
           sudo chown -R odooadmin:odooadmin "$RUNNER_DIR"
 
-          cd "$RUNNER_DIR"
-
+          # --------------------------------------------------
+          # 20.4 Download latest GitHub Actions runner
+          # --------------------------------------------------
           echo ""
           echo "Downloading latest GitHub Actions runner..."
+
+          cd "$RUNNER_DIR"
 
           RUNNER_VERSION=$(curl -fsSL \
             https://api.github.com/repos/actions/runner/releases/latest \
             | grep '"tag_name":' \
-            | cut -d'"' -f4)
+            | head -1 \
+            | cut -d '"' -f4)
+
+          if [ -z "$RUNNER_VERSION" ]; then
+            echo "ERROR: Could not determine latest runner version."
+            exit 1
+          fi
 
           echo "Runner version: $RUNNER_VERSION"
 
           RUNNER_VERSION_NUMBER="${RUNNER_VERSION#v}"
 
-          sudo -u odooadmin curl -fL \
+          curl -fL \
             -o actions-runner.tar.gz \
-            "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION_NUMBER}/actions-runner-linux-x64-${RUNNER_VERSION_NUMBER}.tar.gz"
+            "https://github.com/actions/runner/releases/download/${RUNNER_VERSION}/actions-runner-linux-x64-${RUNNER_VERSION_NUMBER}.tar.gz"
 
-          sudo -u odooadmin tar xzf actions-runner.tar.gz
+          tar xzf actions-runner.tar.gz
+          rm -f actions-runner.tar.gz
 
-          sudo chown -R odooadmin:odooadmin "$RUNNER_DIR"
-
+          # --------------------------------------------------
+          # 20.5 Install runner dependencies
+          # --------------------------------------------------
           echo ""
-          echo "Configuring self-hosted runner..."
+          echo "Installing runner dependencies..."
+
+          sudo ./bin/installdependencies.sh
+
+          # --------------------------------------------------
+          # 20.6 Configure runner
+          # --------------------------------------------------
+          echo ""
+          echo "Registering runner with GitHub..."
 
           sudo -u odooadmin ./config.sh \
             --unattended \
-            --url "https://github.com/vaheme64atomic/freevpslinux" \
-            --token "$RUNNER_TOKEN" \
-            --name "github-linux-odoo" \
-            --labels "self-hosted,linux,odoo19" \
-            --work "_work"
+            --url "https://github.com/${REPO}" \
+            --token "$REG_TOKEN" \
+            --name "$RUNNER_NAME" \
+            --labels "self-hosted,linux,odoo" \
+            --work "_work" \
+            --replace
 
+          # --------------------------------------------------
+          # 20.7 Install runner as system service
+          # --------------------------------------------------
           echo ""
-          echo "Installing runner service..."
+          echo "Installing GitHub Actions runner service..."
 
           sudo ./svc.sh install odooadmin
-
           sudo ./svc.sh start
 
+          # --------------------------------------------------
+          # 20.8 Verify runner
+          # --------------------------------------------------
           echo ""
           echo "Runner service status:"
 
           sudo ./svc.sh status
+
+          echo ""
+          echo "======================================"
+          echo "GitHub Self-hosted Runner READY"
+          echo "======================================"
+
+          echo ""
+          echo "Runner name:"
+          echo "$RUNNER_NAME"
+
+          echo ""
+          echo "Labels:"
+          echo "self-hosted, linux, odoo"
+
+          echo ""
+          echo "Repository:"
+          echo "$REPO"
 
       # =========================================================
       # 20. Keep Runner Alive
