@@ -63,25 +63,28 @@ jobs:
 
           echo "RESTORE_DIR=$RESTORE_DIR" >> "$GITHUB_OUTPUT"
           
-      - name: Verify backup
+      - name: Verify latest backup
         env:
           RESTORE_DIR: ${{ steps.download_backup.outputs.RESTORE_DIR }}
         run: |
           BACKUP=$(find "$RESTORE_DIR" \
             -type f \
             -name 'kosarTest_backup_*.tar.gz' \
-            | head -1)
+            -printf '%T@ %p\n' \
+            | sort -nr \
+            | head -1 \
+            | cut -d' ' -f2-)
 
           if [ -z "$BACKUP" ]; then
             echo "ERROR: Backup archive not found."
             exit 1
           fi
 
-          echo "Backup found:"
+          echo "Latest backup selected:"
           ls -lh "$BACKUP"
 
           echo "BACKUP=$BACKUP" >> "$GITHUB_ENV"
-          
+
       - name: Extract backup
         run: |
           sudo rm -rf /tmp/odoo_restore_work
@@ -107,9 +110,10 @@ jobs:
           sudo du -ah /tmp/odoo_restore_work \
             | sort -h \
             | tail -30
+
       - name: Restore database test
         run: |
-          echo "Preparing test database..."
+          echo "=== Preparing test database ==="
 
           sudo -u postgres psql -d postgres -c \
             "SELECT pg_terminate_backend(pid)
@@ -117,13 +121,15 @@ jobs:
              WHERE datname = 'kosarRestoreTest'
              AND pid <> pg_backend_pid();"
 
-          sudo -u postgres dropdb --if-exists kosarRestoreTest
+          sudo -u postgres dropdb \
+            --if-exists \
+            kosarRestoreTest
 
           sudo -u postgres createdb \
             -O odooadmin \
             kosarRestoreTest
 
-          echo "Restoring database..."
+          echo "=== Restoring database ==="
 
           sudo -u postgres pg_restore \
             --dbname=kosarRestoreTest \
@@ -131,9 +137,9 @@ jobs:
             --no-acl \
             /tmp/odoo_restore_work/kosarTest.dump
 
-          echo "Database restore completed."
+          echo "=== Database restore completed ==="
 
-          echo "Checking restored database..."
+          echo "=== Checking restored database ==="
 
           sudo -u postgres psql \
             -d kosarRestoreTest \
@@ -142,6 +148,7 @@ jobs:
           sudo -u postgres psql \
             -d kosarRestoreTest \
             -c "SELECT count(*) AS attachments FROM ir_attachment;"
+
       - name: Show restore environment
         run: |
           echo "Runner:"
