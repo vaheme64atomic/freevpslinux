@@ -384,6 +384,31 @@ jobs:
             /etc/odoo.conf
 
       # =========================================================
+      # 16. Configure PostgreSQL role
+      # =========================================================
+      - name: 16. Configure PostgreSQL for Odoo
+        run: |
+          set -e
+
+          echo "Checking PostgreSQL..."
+          sudo systemctl enable postgresql
+          sudo systemctl start postgresql
+
+          echo ""
+          echo "Creating PostgreSQL role odooadmin..."
+
+          sudo -u postgres psql -tc \
+            "SELECT 1 FROM pg_roles WHERE rolname='odooadmin';" \
+            | grep -q 1 || \
+          sudo -u postgres psql -c \
+            "CREATE ROLE odooadmin WITH LOGIN CREATEDB PASSWORD 'odooadmin';"
+
+          echo ""
+          echo "PostgreSQL roles:"
+          sudo -u postgres psql -c "\du"
+
+
+      # =========================================================
       # 16. Create Odoo systemd service
       # =========================================================
       - name: 16. Create Odoo service
@@ -420,6 +445,37 @@ jobs:
           sudo systemctl enable odoo
 
       # =========================================================
+      # 17. Configure Odoo
+      # =========================================================
+      - name: 17. Configure Odoo
+        run: |
+          set -e
+
+          sudo mkdir -p /opt/odoo/.local/share/Odoo/filestore
+          sudo mkdir -p /var/log/odoo
+
+          sudo chown -R odoo:odoo /opt/odoo/.local
+          sudo chown -R odoo:odoo /var/log/odoo
+
+          sudo tee /etc/odoo.conf > /dev/null <<'EOF'
+          [options]
+          admin_passwd = vahid123
+          db_host = False
+          db_port = False
+          db_user = odooadmin
+          db_password = odooadmin
+          addons_path = /opt/odoo/odoo/addons,/opt/odoo/custom-addons
+          data_dir = /opt/odoo/.local/share/Odoo
+          logfile = /var/log/odoo/odoo.log
+          http_port = 8069
+          proxy_mode = False
+          workers = 0
+          EOF
+
+          sudo chown odoo:odoo /etc/odoo.conf
+          sudo chmod 640 /etc/odoo.conf
+
+      # =========================================================
       # 17. Start Odoo 19
       # =========================================================
       - name: 17. Start Odoo 19
@@ -439,6 +495,36 @@ jobs:
           echo ""
           echo "Odoo status:"
           sudo systemctl --no-pager --full status odoo | head -50
+
+      # =========================================================
+      # 18. Create Odoo 19 systemd service
+      # =========================================================
+      - name: 18. Create Odoo service
+        run: |
+          set -e
+
+          sudo tee /etc/systemd/system/odoo.service > /dev/null <<'EOF'
+          [Unit]
+          Description=Odoo 19
+          Requires=postgresql.service
+          After=network.target postgresql.service
+
+          [Service]
+          Type=simple
+          User=odoo
+          Group=odoo
+          WorkingDirectory=/opt/odoo/odoo
+          ExecStart=/opt/odoo/venv/bin/python /opt/odoo/odoo/odoo-bin -c /etc/odoo.conf
+          Restart=always
+          RestartSec=5
+
+          [Install]
+          WantedBy=multi-user.target
+          EOF
+
+          sudo systemctl daemon-reload
+          sudo systemctl enable odoo
+          sudo systemctl start odoo
 
       # =========================================================
       # 18. Verify Odoo 19
@@ -479,6 +565,38 @@ jobs:
           echo ""
           echo "======================================"
           echo "ODOO 19 IS READY"
+          echo "======================================"
+
+      # =========================================================
+      # 19. Verify Odoo service
+      # =========================================================
+      - name: 19. Verify Odoo service
+        run: |
+          set -e
+
+          sleep 10
+
+          echo "=== Odoo service ==="
+          sudo systemctl is-active odoo
+
+          echo ""
+          echo "=== Odoo version ==="
+          sudo -u odoo \
+            /opt/odoo/venv/bin/python \
+            /opt/odoo/odoo/odoo-bin \
+            --version
+
+          echo ""
+          echo "=== Odoo port ==="
+          sudo ss -lntp | grep ':8069'
+
+          echo ""
+          echo "=== HTTP test ==="
+          curl -I http://127.0.0.1:8069/web/database/selector
+
+          echo ""
+          echo "======================================"
+          echo "ODOO 19 LAB READY"
           echo "======================================"
 
       # =========================================================
