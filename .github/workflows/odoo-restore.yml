@@ -60,7 +60,7 @@ jobs:
 
           sudo rm -rf "$RESTORE_DIR"
           sudo mkdir -p "$RESTORE_DIR"
-          sudo chown runner:runner "$RESTORE_DIR"
+          sudo chown -R odooadmin:odooadmin "$RESTORE_DIR"
 
           echo "Restore directory:"
           echo "$RESTORE_DIR"
