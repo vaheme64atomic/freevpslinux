@@ -247,6 +247,18 @@ jobs:
       
           echo "PostgreSQL restore completed successfully."
 
+      - name: Prepare PostgreSQL restore
+        run: |
+          echo "Preparing PostgreSQL restore..."
+
+          sudo systemctl stop odoo
+
+          sudo -u postgres psql -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = 'kosarTest' AND pid <> pg_backend_pid();" || true
+
+          sudo -u postgres psql -c "DROP DATABASE IF EXISTS \"kosarTest\";"
+          sudo -u postgres psql -c "CREATE DATABASE \"kosarTest\" OWNER odoo;"
+
+          echo "PostgreSQL database prepared successfully."
       - name: Restore database
         run: |
           echo "=== Database Restore Started ==="
