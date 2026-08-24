@@ -1,22 +1,217 @@
-
 name: Odoo Backup
 
 on:
   workflow_dispatch:
-   schedule:
+
+  schedule:
     - cron: '0 */2 * * *'
+
+permissions:
+  actions: write
+  contents: read
 
 jobs:
   backup:
     runs-on: self-hosted
+    timeout-minutes: 30
 
     steps:
-      - name: Run Odoo backup
-        run: |
-          sudo -n /opt/odoo/backup_odoo.sh
 
-      - name: Find latest backup
+      # --------------------------------------------------
+      # 1. Check Odoo
+      # --------------------------------------------------
+      - name: 1. Check Odoo
         run: |
+          echo "Checking Odoo..."
+
+          sudo systemctl is-active --quiet odoo
+
+          echo "Odoo is running."
+
+          sudo ss -lntp | grep 8069 || true
+
+      # --------------------------------------------------
+      # 2. Check PostgreSQL
+      # --------------------------------------------------
+      - name: 2. Check PostgreSQL
+        run: |
+          echo "Checking PostgreSQL..."
+
+          sudo systemctl is-active --quiet postgresql
+
+          sudo -u postgres psql -c "SELECT version();"
+
+      # --------------------------------------------------
+      # 3. Prepare backup directory
+      # --------------------------------------------------
+      - name: 3. Prepare backup directory
+        run: |
+          BACKUP_DIR="/var/backups/odoo"
+
+          sudo mkdir -p "$BACKUP_DIR"
+          sudo chmod 750 "$BACKUP_DIR"
+
+          echo "Backup directory:"
+          sudo ls -ld "$BACKUP_DIR"
+
+      # --------------------------------------------------
+      # 4. Backup database
+      # --------------------------------------------------
+      - name: 4. Backup database
+        run: |
+          set -e
+
+          DB_NAME="kosarTest"
+          BACKUP_DIR="/var/backups/odoo"
+
+          TIMESTAMP=$(date '+%Y%m%d_%H%M%S')
+
+          DUMP="$BACKUP_DIR/${DB_NAME}_${TIMESTAMP}.dump"
+
+          echo "Database:"
+          echo "$DB_NAME"
+
+          echo "Dump:"
+          echo "$DUMP"
+
+          echo "Checking database..."
+
+          if ! sudo -u postgres psql -tAc \
+            "SELECT 1 FROM pg_database WHERE datname='$DB_NAME'" \
+            | grep -q 1
+          then
+            echo "ERROR: Database $DB_NAME does not exist."
+            exit 1
+          fi
+
+          echo "Database exists."
+
+          echo "Creating PostgreSQL dump..."
+
+          sudo -u postgres pg_dump \
+            -Fc \
+            --no-owner \
+            --no-acl \
+            "$DB_NAME" \
+            -f "$DUMP"
+
+          echo "Database dump completed."
+
+          sudo ls -lh "$DUMP"
+
+      # --------------------------------------------------
+      # 5. Backup filestore
+      # --------------------------------------------------
+      - name: 5. Backup filestore
+        run: |
+          set -e
+
+          DB_NAME="kosarTest"
+          BACKUP_DIR="/var/backups/odoo"
+
+          FILestore="/opt/odoo/.local/share/Odoo/filestore/$DB_NAME"
+
+          TIMESTAMP=$(date '+%Y%m%d_%H%M%S')
+
+          FILESTORE="$BACKUP_DIR/${DB_NAME}_filestore_${TIMESTAMP}.tar.gz"
+
+          echo "Filestore:"
+          echo "$FILestore"
+
+          if [ ! -d "$FILestore" ]; then
+            echo "ERROR: Filestore does not exist:"
+            echo "$FILestore"
+            exit 1
+          fi
+
+          echo "Filestore size:"
+          sudo du -sh "$FILestore"
+
+          echo "Creating filestore archive..."
+
+          sudo tar \
+            -czf "$FILESTORE" \
+            -C "/opt/odoo/.local/share/Odoo/filestore" \
+            "$DB_NAME"
+
+          echo "Filestore backup completed."
+
+          sudo ls -lh "$FILESTORE"
+
+      # --------------------------------------------------
+      # 6. Create combined backup archive
+      # --------------------------------------------------
+      - name: 6. Create combined backup
+        run: |
+          set -e
+
+          DB_NAME="kosarTest"
+          BACKUP_DIR="/var/backups/odoo"
+
+          TIMESTAMP=$(date '+%Y%m%d_%H%M%S')
+
+          FINAL="$BACKUP_DIR/${DB_NAME}_backup_${TIMESTAMP}.tar.gz"
+
+          DUMP=$(sudo find "$BACKUP_DIR" \
+            -maxdepth 1 \
+            -type f \
+            -name "${DB_NAME}_*.dump" \
+            -printf '%T@ %p\n' \
+            | sort -nr \
+            | head -1 \
+            | cut -d' ' -f2-)
+
+          FILESTORE=$(sudo find "$BACKUP_DIR" \
+            -maxdepth 1 \
+            -type f \
+            -name "${DB_NAME}_filestore_*.tar.gz" \
+            -printf '%T@ %p\n' \
+            | sort -nr \
+            | head -1 \
+            | cut -d' ' -f2-)
+
+          if [ -z "$DUMP" ]; then
+            echo "ERROR: Database dump not found."
+            exit 1
+          fi
+
+          if [ -z "$FILESTORE" ]; then
+            echo "ERROR: Filestore archive not found."
+            exit 1
+          fi
+
+          echo "Database dump:"
+          echo "$DUMP"
+
+          echo "Filestore archive:"
+          echo "$FILESTORE"
+
+          echo "Creating final backup..."
+
+          WORK_DIR=$(mktemp -d)
+
+          sudo cp "$DUMP" "$WORK_DIR/kosarTest.dump"
+          sudo cp "$FILESTORE" "$WORK_DIR/kosarTest-filestore.tar.gz"
+
+          sudo tar \
+            -czf "$FINAL" \
+            -C "$WORK_DIR" \
+            kosarTest.dump \
+            kosarTest-filestore.tar.gz
+
+          sudo rm -rf "$WORK_DIR"
+
+          echo ""
+          echo "FINAL BACKUP:"
+          sudo ls -lh "$FINAL"
+
+      # --------------------------------------------------
+      # 7. Verify backup
+      # --------------------------------------------------
+      - name: 7. Verify backup
+        run: |
+          set -e
+
           BACKUP=$(sudo find /var/backups/odoo \
             -maxdepth 1 \
             -type f \
@@ -26,13 +221,77 @@ jobs:
             | head -1 \
             | cut -d' ' -f2-)
 
-          echo "Latest backup: $BACKUP"
+          if [ -z "$BACKUP" ]; then
+            echo "ERROR: Final backup not found."
+            exit 1
+          fi
 
-          sudo cp "$BACKUP" "$GITHUB_WORKSPACE/"
+          echo "Backup:"
+          echo "$BACKUP"
 
-      - name: Upload backup artifact
+          echo ""
+          echo "Backup contents:"
+
+          sudo tar -tzf "$BACKUP"
+
+          echo ""
+          echo "Backup integrity check..."
+
+          sudo tar -tzf "$BACKUP" >/dev/null
+
+          echo "Backup integrity: OK"
+
+      # --------------------------------------------------
+      # 8. Copy artifact
+      # --------------------------------------------------
+      - name: 8. Copy backup to workspace
+        run: |
+          set -e
+
+          BACKUP=$(sudo find /var/backups/odoo \
+            -maxdepth 1 \
+            -type f \
+            -name 'kosarTest_backup_*.tar.gz' \
+            -printf '%T@ %p\n' \
+            | sort -nr \
+            | head -1 \
+            | cut -d' ' -f2-)
+
+          sudo cp "$BACKUP" \
+            "$GITHUB_WORKSPACE/"
+
+          sudo chown \
+            "$(id -u):$(id -g)" \
+            "$GITHUB_WORKSPACE"/kosarTest_backup_*.tar.gz
+
+          echo "Artifact prepared:"
+          ls -lh "$GITHUB_WORKSPACE"/kosarTest_backup_*.tar.gz
+
+      # --------------------------------------------------
+      # 9. Upload artifact
+      # --------------------------------------------------
+      - name: 9. Upload backup artifact
         uses: actions/upload-artifact@v4
         with:
           name: odoo-backup
           path: "${{ github.workspace }}/kosarTest_backup_*.tar.gz"
           retention-days: 7
+
+      # --------------------------------------------------
+      # 10. Cleanup old local backups
+      # --------------------------------------------------
+      - name: 10. Cleanup old local backups
+        run: |
+          echo "Removing local backups older than 7 days..."
+
+          sudo find /var/backups/odoo \
+            -type f \
+            -mtime +7 \
+            -delete
+
+          echo "Cleanup completed."
+
+          echo ""
+          echo "Remaining backups:"
+
+          sudo ls -lh /var/backups/odoo || true
