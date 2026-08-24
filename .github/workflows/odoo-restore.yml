@@ -107,6 +107,41 @@ jobs:
           sudo du -ah /tmp/odoo_restore_work \
             | sort -h \
             | tail -30
+      - name: Restore database test
+        run: |
+          echo "Preparing test database..."
+
+          sudo -u postgres psql -d postgres -c \
+            "SELECT pg_terminate_backend(pid)
+             FROM pg_stat_activity
+             WHERE datname = 'kosarRestoreTest'
+             AND pid <> pg_backend_pid();"
+
+          sudo -u postgres dropdb --if-exists kosarRestoreTest
+
+          sudo -u postgres createdb \
+            -O odooadmin \
+            kosarRestoreTest
+
+          echo "Restoring database..."
+
+          sudo -u postgres pg_restore \
+            --dbname=kosarRestoreTest \
+            --no-owner \
+            --no-acl \
+            /tmp/odoo_restore_work/kosarTest.dump
+
+          echo "Database restore completed."
+
+          echo "Checking restored database..."
+
+          sudo -u postgres psql \
+            -d kosarRestoreTest \
+            -c "SELECT count(*) AS users FROM res_users;"
+
+          sudo -u postgres psql \
+            -d kosarRestoreTest \
+            -c "SELECT count(*) AS attachments FROM ir_attachment;"
       - name: Show restore environment
         run: |
           echo "Runner:"
