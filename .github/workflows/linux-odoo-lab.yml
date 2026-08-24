@@ -287,10 +287,16 @@ jobs:
           fi
 
           echo ""
-          echo "Odoo version:"
-          sudo -u odoo \
-            /opt/odoo/odoo/odoo-bin \
-            --version
+          echo "Odoo source branch:"
+          sudo -u odoo git \
+            -C /opt/odoo/odoo \
+            branch --show-current
+
+          echo ""
+          echo "Odoo commit:"
+          sudo -u odoo git \
+            -C /opt/odoo/odoo \
+            rev-parse --short HEAD
 
       # =========================================================
       # 13. Create Python virtual environment
@@ -316,6 +322,25 @@ jobs:
             /opt/odoo/venv/bin/pip \
             install \
             -r /opt/odoo/odoo/requirements.txt
+
+      # =========================================================
+      # 15. Verify Odoo 19 Python environment
+      # =========================================================
+      - name: 15. Verify Odoo 19
+        run: |
+          set -e
+
+          echo "Checking lxml..."
+          sudo -u odoo \
+            /opt/odoo/venv/bin/python \
+            -c "from lxml import etree; print('lxml OK:', etree.LXML_VERSION)"
+
+          echo ""
+          echo "Checking Odoo..."
+          sudo -u odoo \
+            /opt/odoo/venv/bin/python \
+            /opt/odoo/odoo/odoo-bin \
+            --version
 
       # =========================================================
       # 15. Configure Odoo
