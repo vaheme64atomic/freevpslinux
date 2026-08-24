@@ -671,15 +671,19 @@ jobs:
           echo "Configuring GitHub Self-hosted Runner"
           echo "======================================"
 
-          RUNNER_DIR="/opt/actions-runner"
+          RUNNER_DIR="/home/odooadmin/actions-runner"
           RUNNER_NAME="github-linux-odoo"
 
           echo ""
           echo "Repository:"
           echo "$REPO"
 
+          echo ""
+          echo "Runner directory:"
+          echo "$RUNNER_DIR"
+
           # --------------------------------------------------
-          # 20.1 Install GitHub CLI if necessary
+          # 20.1 Install GitHub CLI
           # --------------------------------------------------
           if ! command -v gh >/dev/null 2>&1; then
             echo "Installing GitHub CLI..."
@@ -719,7 +723,9 @@ jobs:
 
           sudo rm -rf "$RUNNER_DIR"
           sudo mkdir -p "$RUNNER_DIR"
-          sudo chown -R odooadmin:odooadmin "$RUNNER_DIR"
+
+          sudo chown -R odooadmin:odooadmin \
+            /home/odooadmin
 
           # --------------------------------------------------
           # 20.4 Download latest GitHub Actions runner
@@ -727,64 +733,71 @@ jobs:
           echo ""
           echo "Downloading latest GitHub Actions runner..."
 
-          cd "$RUNNER_DIR"
-
-          RUNNER_VERSION=$(curl -fsSL \
-            https://api.github.com/repos/actions/runner/releases/latest \
-            | grep '"tag_name":' \
-            | head -1 \
-            | cut -d '"' -f4)
-
-          if [ -z "$RUNNER_VERSION" ]; then
-            echo "ERROR: Could not determine latest runner version."
-            exit 1
-          fi
-
-          echo "Runner version: $RUNNER_VERSION"
-
-          RUNNER_VERSION_NUMBER="${RUNNER_VERSION#v}"
-
-          curl -fL \
-            -o actions-runner.tar.gz \
-            "https://github.com/actions/runner/releases/download/${RUNNER_VERSION}/actions-runner-linux-x64-${RUNNER_VERSION_NUMBER}.tar.gz"
-
-          tar xzf actions-runner.tar.gz
-          rm -f actions-runner.tar.gz
+          sudo -u odooadmin \
+            bash -c "cd '$RUNNER_DIR' && \
+            RUNNER_VERSION=\$(curl -fsSL \
+              https://api.github.com/repos/actions/runner/releases/latest \
+              | grep '\"tag_name\":' \
+              | head -1 \
+              | cut -d '\"' -f4) && \
+            echo \"Runner version: \$RUNNER_VERSION\" && \
+            RUNNER_VERSION_NUMBER=\"\${RUNNER_VERSION#v}\" && \
+            curl -fL \
+              -o actions-runner.tar.gz \
+              \"https://github.com/actions/runner/releases/download/\${RUNNER_VERSION}/actions-runner-linux-x64-\${RUNNER_VERSION_NUMBER}.tar.gz\""
 
           # --------------------------------------------------
-          # 20.5 Install runner dependencies
+          # 20.5 Extract runner
+          # --------------------------------------------------
+          echo ""
+          echo "Extracting GitHub Actions runner..."
+
+          sudo -u odooadmin \
+            tar -xzf \
+            "$RUNNER_DIR/actions-runner.tar.gz" \
+            -C "$RUNNER_DIR"
+
+          sudo rm -f \
+            "$RUNNER_DIR/actions-runner.tar.gz"
+
+          # --------------------------------------------------
+          # 20.6 Install runner dependencies
           # --------------------------------------------------
           echo ""
           echo "Installing runner dependencies..."
 
+          cd "$RUNNER_DIR"
+
           sudo ./bin/installdependencies.sh
 
           # --------------------------------------------------
-          # 20.6 Configure runner
+          # 20.7 Configure runner
           # --------------------------------------------------
           echo ""
           echo "Registering runner with GitHub..."
 
-          sudo -u odooadmin ./config.sh \
-            --unattended \
-            --url "https://github.com/${REPO}" \
-            --token "$REG_TOKEN" \
-            --name "$RUNNER_NAME" \
-            --labels "self-hosted,linux,odoo" \
-            --work "_work" \
-            --replace
+          sudo -u odooadmin \
+            ./config.sh \
+              --unattended \
+              --url "https://github.com/${REPO}" \
+              --token "$REG_TOKEN" \
+              --name "$RUNNER_NAME" \
+              --labels "self-hosted,linux,odoo" \
+              --work "_work" \
+              --replace
 
           # --------------------------------------------------
-          # 20.7 Install runner as system service
+          # 20.8 Install systemd service
           # --------------------------------------------------
           echo ""
           echo "Installing GitHub Actions runner service..."
 
           sudo ./svc.sh install odooadmin
+
           sudo ./svc.sh start
 
           # --------------------------------------------------
-          # 20.8 Verify runner
+          # 20.9 Verify service
           # --------------------------------------------------
           echo ""
           echo "Runner service status:"
