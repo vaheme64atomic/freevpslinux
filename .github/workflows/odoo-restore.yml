@@ -1,6 +1,4 @@
 
-
-
 name: Odoo Restore
 
 on:
@@ -209,6 +207,45 @@ jobs:
 
           echo "PostgreSQL:"
           systemctl is-active postgresql || true
+
+      - name: Restore PostgreSQL database
+        shell: bash
+        run: |
+          set -e
+      
+          DB_NAME="kosarTest"
+          DUMP="/tmp/odoo_restore_work/kosarTest.dump"
+      
+          echo "Checking dump..."
+          ls -lh "$DUMP"
+      
+          echo "Checking PostgreSQL..."
+          sudo -u postgres psql -c "SELECT version();"
+      
+          echo "Dropping old test database if exists..."
+          sudo -u postgres dropdb --if-exists "$DB_NAME"
+      
+          echo "Creating database..."
+          sudo -u postgres createdb "$DB_NAME"
+      
+          echo "Restoring database..."
+          sudo -u postgres pg_restore \
+            --dbname="$DB_NAME" \
+            --no-owner \
+            --no-acl \
+            "$DUMP"
+      
+          echo "Checking restored database..."
+          sudo -u postgres psql \
+            -d "$DB_NAME" \
+            -c "SELECT current_database();"
+      
+          echo "Checking tables..."
+          sudo -u postgres psql \
+            -d "$DB_NAME" \
+            -c "SELECT count(*) AS table_count FROM information_schema.tables WHERE table_schema='public';"
+      
+          echo "PostgreSQL restore completed successfully."
 
       - name: Restore database
         run: |
