@@ -1,1 +1,19 @@
 
+name: Odoo Restore Test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  restore:
+    runs-on: self-hosted
+
+    steps:
+      - name: Show runner
+        run: |
+          whoami
+          hostname
+          pwd
+
+      - name: List backup artifacts
+        uses: actions/download-artifact@v4
