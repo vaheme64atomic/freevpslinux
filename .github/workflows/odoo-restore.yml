@@ -87,17 +87,26 @@ jobs:
           sudo rm -rf /tmp/odoo_restore_work
           sudo mkdir -p /tmp/odoo_restore_work
 
+          echo "Extracting:"
+          echo "$BACKUP"
+
           sudo tar -xzf "$BACKUP" \
             -C /tmp/odoo_restore_work
 
-          echo "Backup extracted successfully."
+          echo ""
+          echo "=== Backup structure ==="
 
           sudo find /tmp/odoo_restore_work \
-            -maxdepth 6 \
-            -type f \
-            -printf '%p\n' \
-            | head -100
-            
+            -maxdepth 8 \
+            -printf '%y %p\n' \
+            | sort
+
+          echo ""
+          echo "=== Backup sizes ==="
+
+          sudo du -ah /tmp/odoo_restore_work \
+            | sort -h \
+            | tail -30
       - name: Show restore environment
         run: |
           echo "Runner:"
