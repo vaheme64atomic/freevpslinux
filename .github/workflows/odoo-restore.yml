@@ -66,7 +66,30 @@ jobs:
 
           echo "Backup found:"
           ls -lh "$BACKUP"
+      - name: Extract backup
+        run: |
+          BACKUP=$(find "$GITHUB_WORKSPACE/restore" \
+            -type f \
+            -name 'kosarTest_backup_*.tar.gz' \
+            | head -1)
 
+          if [ -z "$BACKUP" ]; then
+            echo "ERROR: Backup archive not found."
+            exit 1
+          fi
+
+          sudo rm -rf /tmp/odoo_restore_work
+          sudo mkdir -p /tmp/odoo_restore_work
+
+          sudo tar -xzf "$BACKUP" -C /tmp/odoo_restore_work
+
+          echo "Backup extracted successfully."
+
+          sudo find /tmp/odoo_restore_work \
+            -maxdepth 4 \
+            -type f \
+            -printf '%p\n' \
+            | head -50
       - name: Show restore environment
         run: |
           echo "Runner:"
