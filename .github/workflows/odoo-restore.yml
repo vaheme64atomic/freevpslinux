@@ -42,6 +42,7 @@ jobs:
           REPO: ${{ github.repository }}
           RUN_ID: ${{ steps.find_backup.outputs.RUN_ID }}
         run: |
+          sudo rm -rf "$GITHUB_WORKSPACE/restore"
           mkdir -p "$GITHUB_WORKSPACE/restore"
 
           gh run download "$RUN_ID" \
