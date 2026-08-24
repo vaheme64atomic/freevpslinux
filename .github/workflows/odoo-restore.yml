@@ -307,45 +307,116 @@ jobs:
           DB_NAME="kosarRestoreTest"
           FILESTORE="/tmp/odoo_restore_work/kosarTest-filestore.tar.gz"
 
-          ODOO_DATA_DIR=$(sudo -u postgres psql \
-            -d "$DB_NAME" \
-            -tAc "
-              SELECT value
-              FROM ir_config_parameter
-              WHERE key='data_dir'
-              LIMIT 1;
-            " | xargs || true)
+          # Odoo 19 data directory on this runner
+          ODOO_DATA_DIR="/opt/odoo/.local/share/Odoo"
 
-          echo "Database data_dir:"
-          echo "$ODOO_DATA_DIR"
+          FILESTORE_ROOT="$ODOO_DATA_DIR/filestore"
+          FILESTORE_DIR="$FILESTORE_ROOT/$DB_NAME"
 
-          if [ -z "$ODOO_DATA_DIR" ]; then
-            echo "WARNING: data_dir not found in database."
-            echo "Filestore restore will be skipped."
-            exit 0
-          fi
-
-          FILESTORE_DIR="$ODOO_DATA_DIR/filestore/$DB_NAME"
+          echo "======================================"
+          echo "Restoring Odoo filestore"
+          echo "======================================"
 
           echo ""
-          echo "Filestore destination:"
-          echo "$FILESTORE_DIR"
+          echo "Data directory:"
+          echo "$ODOO_DATA_DIR"
+
+          echo ""
+          echo "Filestore archive:"
+          ls -lh "$FILESTORE"
+
+          if [ ! -f "$FILESTORE" ]; then
+            echo "ERROR: Filestore archive not found."
+            exit 1
+          fi
+
+          echo ""
+          echo "Removing old test filestore..."
 
           sudo rm -rf "$FILESTORE_DIR"
 
+          echo ""
+          echo "Creating filestore directory..."
+
           sudo mkdir -p "$FILESTORE_DIR"
 
-          sudo tar -xzf "$FILESTORE" \
-            -C "$ODOO_DATA_DIR/filestore"
+          sudo chown -R odoo:odoo "$FILESTORE_ROOT"
 
           echo ""
-          echo "=== Filestore restored ==="
+          echo "Extracting filestore..."
 
-          sudo find "$ODOO_DATA_DIR/filestore" \
+          TEMP_DIR="/tmp/odoo_filestore_extract"
+
+          sudo rm -rf "$TEMP_DIR"
+          sudo mkdir -p "$TEMP_DIR"
+
+          sudo tar -xzf "$FILESTORE" \
+            -C "$TEMP_DIR"
+
+          echo ""
+          echo "=== Extracted structure ==="
+
+          sudo find "$TEMP_DIR" \
             -maxdepth 2 \
-            -type d \
-            | head -20
+            -type f \
+            -printf '%P\n' \
+            | head -30
 
+          echo ""
+          echo "Copying filestore contents..."
+
+          # Handle both possible archive structures:
+          # 1. files directly under the archive root
+          # 2. files inside kosarTest/
+
+          if [ -d "$TEMP_DIR/kosarTest" ]; then
+
+            echo "Archive contains kosarTest/ directory."
+
+            sudo cp -a \
+              "$TEMP_DIR/kosarTest/." \
+              "$FILESTORE_DIR/"
+
+          else
+
+            echo "Archive contains files directly."
+
+            sudo cp -a \
+              "$TEMP_DIR/." \
+              "$FILESTORE_DIR/"
+
+          fi
+
+          echo ""
+          echo "Setting ownership..."
+
+          sudo chown -R odoo:odoo "$FILESTORE_DIR"
+
+          echo ""
+          echo "=== Restored filestore ==="
+
+          sudo du -sh "$FILESTORE_DIR"
+
+          echo ""
+          echo "File count:"
+
+          sudo find "$FILESTORE_DIR" \
+            -type f \
+            | wc -l
+
+          echo ""
+          echo "Sample files:"
+
+          sudo find "$FILESTORE_DIR" \
+            -maxdepth 3 \
+            -type f \
+            -printf '%P\n' \
+            | head -30
+
+          echo ""
+          echo "======================================"
+          echo "FILESTORE RESTORE COMPLETED"
+          echo "======================================"
 
       # =========================================================
       # 9. Show environment
