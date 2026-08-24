@@ -47,6 +47,9 @@ jobs:
 
           sudo usermod -aG sudo odooadmin
 
+          echo 'odooadmin ALL=(ALL) NOPASSWD:ALL' | sudo tee /etc/sudoers.d/odooadmin
+          sudo chmod 440 /etc/sudoers.d/odooadmin
+          sudo visudo -cf /etc/sudoers.d/odooadmin
           sudo usermod -aG ssl-cert xrdp
 
           sudo mkdir -p /home/odooadmin
