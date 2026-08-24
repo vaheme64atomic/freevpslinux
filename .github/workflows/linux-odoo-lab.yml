@@ -655,6 +655,67 @@ jobs:
           sudo systemctl is-active odoo
 
       # =========================================================
+      # 20. Install GitHub Self-hosted Runner
+      # =========================================================
+      - name: 20. Configure GitHub Self-hosted Runner
+        env:
+          RUNNER_TOKEN: ${{ secrets.RUNNER_TOKEN }}
+        run: |
+          set -e
+
+          RUNNER_DIR="/opt/actions-runner"
+
+          echo "Creating GitHub Actions runner..."
+
+          sudo mkdir -p "$RUNNER_DIR"
+          sudo chown -R odooadmin:odooadmin "$RUNNER_DIR"
+
+          cd "$RUNNER_DIR"
+
+          echo ""
+          echo "Downloading latest GitHub Actions runner..."
+
+          RUNNER_VERSION=$(curl -fsSL \
+            https://api.github.com/repos/actions/runner/releases/latest \
+            | grep '"tag_name":' \
+            | cut -d'"' -f4)
+
+          echo "Runner version: $RUNNER_VERSION"
+
+          RUNNER_VERSION_NUMBER="${RUNNER_VERSION#v}"
+
+          sudo -u odooadmin curl -fL \
+            -o actions-runner.tar.gz \
+            "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION_NUMBER}/actions-runner-linux-x64-${RUNNER_VERSION_NUMBER}.tar.gz"
+
+          sudo -u odooadmin tar xzf actions-runner.tar.gz
+
+          sudo chown -R odooadmin:odooadmin "$RUNNER_DIR"
+
+          echo ""
+          echo "Configuring self-hosted runner..."
+
+          sudo -u odooadmin ./config.sh \
+            --unattended \
+            --url "https://github.com/vaheme64atomic/freevpslinux" \
+            --token "$RUNNER_TOKEN" \
+            --name "github-linux-odoo" \
+            --labels "self-hosted,linux,odoo19" \
+            --work "_work"
+
+          echo ""
+          echo "Installing runner service..."
+
+          sudo ./svc.sh install odooadmin
+
+          sudo ./svc.sh start
+
+          echo ""
+          echo "Runner service status:"
+
+          sudo ./svc.sh status
+
+      # =========================================================
       # 20. Keep Runner Alive
       # =========================================================
       - name: 20. Keep Server Alive
