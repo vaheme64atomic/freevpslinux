@@ -1,19 +1,82 @@
-
-name: Odoo Restore Test
+name: Odoo Restore
 
 on:
   workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
 
 jobs:
   restore:
     runs-on: self-hosted
 
     steps:
-      - name: Show runner
+      - name: Find latest backup run
+        id: find_backup
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
         run: |
-          whoami
-          hostname
-          pwd
+          echo "Finding latest successful Odoo backup..."
 
-      - name: List backup artifacts
-        uses: actions/download-artifact@v4
+          RUN_ID=$(gh run list \
+            --repo "$REPO" \
+            --workflow "odoo-backup.yml" \
+            --status success \
+            --limit 1 \
+            --json databaseId \
+            --jq '.[0].databaseId')
+
+          if [ -z "$RUN_ID" ]; then
+            echo "ERROR: No successful backup run found."
+            exit 1
+          fi
+
+          echo "Latest backup Run ID: $RUN_ID"
+          echo "RUN_ID=$RUN_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Download latest backup
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ steps.find_backup.outputs.RUN_ID }}
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/restore"
+
+          gh run download "$RUN_ID" \
+            --repo "$REPO" \
+            --name odoo-backup \
+            --dir "$GITHUB_WORKSPACE/restore"
+
+          echo "Downloaded backup:"
+          ls -lh "$GITHUB_WORKSPACE/restore"
+
+      - name: Verify backup
+        run: |
+          BACKUP=$(find "$GITHUB_WORKSPACE/restore" \
+            -type f \
+            -name 'kosarTest_backup_*.tar.gz' \
+            | head -1)
+
+          if [ -z "$BACKUP" ]; then
+            echo "ERROR: Backup archive not found."
+            exit 1
+          fi
+
+          echo "Backup found:"
+          ls -lh "$BACKUP"
+
+      - name: Show restore environment
+        run: |
+          echo "Runner:"
+          hostname
+
+          echo "User:"
+          whoami
+
+          echo "Odoo service:"
+          systemctl is-active odoo || true
+
+          echo "PostgreSQL:"
+          systemctl is-active postgresql || true
