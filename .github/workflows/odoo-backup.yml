@@ -14,16 +14,19 @@ jobs:
           sudo -n /opt/odoo/backup_odoo.sh
 
       - name: Find latest backup
-        id: backup
         run: |
-          BACKUP=$(sudo ls -t /var/backups/odoo/kosarTest_backup_*.tar.gz | head -1)
-          echo "BACKUP=$BACKUP" >> "$GITHUB_OUTPUT"
+          BACKUP=$(sudo find /var/backups/odoo \
+            -maxdepth 1 \
+            -type f \
+            -name 'kosarTest_backup_*.tar.gz' \
+            -printf '%T@ %p\n' \
+            | sort -nr \
+            | head -1 \
+            | cut -d' ' -f2-)
+
           echo "Latest backup: $BACKUP"
 
-      - name: Copy backup to runner workspace
-        run: |
-          sudo cp "${{ steps.backup.outputs.BACKUP }}" \
-            "$GITHUB_WORKSPACE/"
+          sudo cp "$BACKUP" "$GITHUB_WORKSPACE/"
 
       - name: Upload backup artifact
         uses: actions/upload-artifact@v4
