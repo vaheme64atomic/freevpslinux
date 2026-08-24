@@ -37,25 +37,36 @@ jobs:
           echo "RUN_ID=$RUN_ID" >> "$GITHUB_OUTPUT"
 
       - name: Download latest backup
+        id: download_backup
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           RUN_ID: ${{ steps.find_backup.outputs.RUN_ID }}
         run: |
-          sudo rm -rf "$GITHUB_WORKSPACE/restore"
-          mkdir -p "$GITHUB_WORKSPACE/restore"
+          RESTORE_DIR="/tmp/odoo-restore-${RUN_ID}"
+
+          sudo rm -rf "$RESTORE_DIR"
+          sudo mkdir -p "$RESTORE_DIR"
+          sudo chown runner:runner "$RESTORE_DIR"
+
+          echo "Restore directory:"
+          echo "$RESTORE_DIR"
 
           gh run download "$RUN_ID" \
             --repo "$REPO" \
             --name odoo-backup \
-            --dir "$GITHUB_WORKSPACE/restore"
+            --dir "$RESTORE_DIR"
 
           echo "Downloaded backup:"
-          ls -lh "$GITHUB_WORKSPACE/restore"
+          ls -lh "$RESTORE_DIR"
 
+          echo "RESTORE_DIR=$RESTORE_DIR" >> "$GITHUB_OUTPUT"
+          
       - name: Verify backup
+        env:
+          RESTORE_DIR: ${{ steps.download_backup.outputs.RESTORE_DIR }}
         run: |
-          BACKUP=$(find "$GITHUB_WORKSPACE/restore" \
+          BACKUP=$(find "$RESTORE_DIR" \
             -type f \
             -name 'kosarTest_backup_*.tar.gz' \
             | head -1)
@@ -67,30 +78,25 @@ jobs:
 
           echo "Backup found:"
           ls -lh "$BACKUP"
+
+          echo "BACKUP=$BACKUP" >> "$GITHUB_ENV"
+          
       - name: Extract backup
         run: |
-          BACKUP=$(find "$GITHUB_WORKSPACE/restore" \
-            -type f \
-            -name 'kosarTest_backup_*.tar.gz' \
-            | head -1)
-
-          if [ -z "$BACKUP" ]; then
-            echo "ERROR: Backup archive not found."
-            exit 1
-          fi
-
           sudo rm -rf /tmp/odoo_restore_work
           sudo mkdir -p /tmp/odoo_restore_work
 
-          sudo tar -xzf "$BACKUP" -C /tmp/odoo_restore_work
+          sudo tar -xzf "$BACKUP" \
+            -C /tmp/odoo_restore_work
 
           echo "Backup extracted successfully."
 
           sudo find /tmp/odoo_restore_work \
-            -maxdepth 4 \
+            -maxdepth 6 \
             -type f \
             -printf '%p\n' \
-            | head -50
+            | head -100
+            
       - name: Show restore environment
         run: |
           echo "Runner:"
