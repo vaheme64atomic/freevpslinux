@@ -555,32 +555,204 @@ jobs:
 
 
       # =========================================================
-      # 11. Final health check
+      # 11. Final Odoo health check
       # =========================================================
       - name: Odoo health check
         run: |
           set -e
 
-          echo "Checking Odoo process..."
+          DB_NAME="kosarRestoreTest"
+          ODOO_URL="http://127.0.0.1:8069"
+
+          echo "======================================"
+          echo "FINAL ODOO RESTORE HEALTH CHECK"
+          echo "======================================"
+
+          # -----------------------------------------------------
+          # 11.1 Check Odoo service
+          # -----------------------------------------------------
+
+          echo ""
+          echo "Checking Odoo service..."
 
           if ! sudo systemctl is-active --quiet odoo; then
             echo "ERROR: Odoo service is not active."
-            sudo journalctl -u odoo \
-              --no-pager \
-              -n 100
+
+            sudo systemctl --no-pager --full status odoo || true
+
+            sudo tail -100 /var/log/odoo/odoo.log || true
+
             exit 1
           fi
 
-          echo ""
-          echo "Checking Odoo port..."
+          echo "Odoo service: OK"
 
-          if sudo ss -lntp | grep -q ':8069'; then
-            echo "Odoo is listening on port 8069."
-          else
-            echo "WARNING: Odoo is not listening on port 8069."
+          # -----------------------------------------------------
+          # 11.2 Check PostgreSQL
+          # -----------------------------------------------------
+
+          echo ""
+          echo "Checking PostgreSQL..."
+
+          if ! sudo systemctl is-active --quiet postgresql; then
+            echo "ERROR: PostgreSQL is not active."
+            exit 1
           fi
+
+          echo "PostgreSQL: OK"
+
+          # -----------------------------------------------------
+          # 11.3 Check restored database exists
+          # -----------------------------------------------------
+
+          echo ""
+          echo "Checking restored database..."
+
+          DB_EXISTS=$(sudo -u postgres psql \
+            -tAc "SELECT 1 FROM pg_database WHERE datname='$DB_NAME'")
+
+          if [ "$DB_EXISTS" != "1" ]; then
+            echo "ERROR: Database $DB_NAME does not exist."
+            exit 1
+          fi
+
+          echo "Database $DB_NAME: OK"
+
+          # -----------------------------------------------------
+          # 11.4 Check PostgreSQL access as Odoo user
+          # -----------------------------------------------------
+
+          echo ""
+          echo "Checking database access as odooadmin..."
+
+          PGPASSWORD='odooadmin' psql \
+            -h 127.0.0.1 \
+            -U odooadmin \
+            -d "$DB_NAME" \
+            -c "SELECT current_database(), current_user;"
+
+          echo "Database authentication: OK"
+
+          # -----------------------------------------------------
+          # 11.5 Check critical Odoo tables
+          # -----------------------------------------------------
+
+          echo ""
+          echo "Checking critical Odoo tables..."
+
+          PGPASSWORD='odooadmin' psql \
+            -h 127.0.0.1 \
+            -U odooadmin \
+            -d "$DB_NAME" \
+            -c "
+              SELECT
+                'res_users' AS table_name,
+                COUNT(*) AS records
+              FROM res_users
+
+              UNION ALL
+
+              SELECT
+                'ir_module_module',
+                COUNT(*)
+              FROM ir_module_module
+
+              UNION ALL
+
+              SELECT
+                'ir_attachment',
+                COUNT(*)
+              FROM ir_attachment;
+            "
+
+          echo "Critical tables: OK"
+
+          # -----------------------------------------------------
+          # 11.6 Check Odoo HTTP endpoint
+          # -----------------------------------------------------
+
+          echo ""
+          echo "Checking Odoo HTTP endpoint..."
+
+          HTTP_CODE=$(curl -s \
+            -o /dev/null \
+            -w "%{http_code}" \
+            "$ODOO_URL/web?db=$DB_NAME")
+
+          echo "HTTP status: $HTTP_CODE"
+
+          if [ "$HTTP_CODE" != "303" ] && [ "$HTTP_CODE" != "200" ]; then
+            echo "ERROR: Odoo HTTP health check failed."
+            exit 1
+          fi
+
+          echo "Odoo HTTP endpoint: OK"
+
+          # -----------------------------------------------------
+          # 11.7 Check Odoo log for recent fatal errors
+          # -----------------------------------------------------
+
+          echo ""
+          echo "Checking recent Odoo errors..."
+
+          if sudo tail -200 /var/log/odoo/odoo.log \
+            | grep -E \
+              "InsufficientPrivilege|OperationalError|CRITICAL|Traceback" \
+              | tail -20
+          then
+            echo ""
+            echo "WARNING: Recent errors were found in Odoo log."
+          else
+            echo "No critical errors detected."
+          fi
+
+          # -----------------------------------------------------
+          # 11.8 Check filestore
+          # -----------------------------------------------------
+
+          echo ""
+          echo "Checking filestore..."
+
+          FILESTORE="/opt/odoo/.local/share/Odoo/filestore/$DB_NAME"
+
+          if [ ! -d "$FILESTORE" ]; then
+            echo "ERROR: Filestore does not exist."
+            exit 1
+          fi
+
+          FILE_COUNT=$(sudo find "$FILESTORE" -type f | wc -l)
+
+          echo "Filestore files: $FILE_COUNT"
+
+          if [ "$FILE_COUNT" -eq 0 ]; then
+            echo "ERROR: Filestore is empty."
+            exit 1
+          fi
+
+          echo "Filestore: OK"
+
+          # -----------------------------------------------------
+          # 11.9 Final result
+          # -----------------------------------------------------
 
           echo ""
           echo "======================================"
-          echo "ODOO RESTORE TEST SUCCESSFUL"
+          echo "ODOO RESTORE HEALTH CHECK PASSED"
+          echo "======================================"
+
+          echo ""
+          echo "Database:"
+          echo "$DB_NAME"
+
+          echo ""
+          echo "Odoo:"
+          echo "$ODOO_URL"
+
+          echo ""
+          echo "Filestore files:"
+          echo "$FILE_COUNT"
+
+          echo ""
+          echo "======================================"
+          echo "RESTORE VALIDATION COMPLETE"
           echo "======================================"
