@@ -1,4 +1,3 @@
-
 name: Odoo Restore
 
 on:
@@ -13,12 +12,18 @@ jobs:
     runs-on: self-hosted
 
     steps:
+
+      # =========================================================
+      # 1. Find latest successful backup
+      # =========================================================
       - name: Find latest backup run
         id: find_backup
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
         run: |
+          set -e
+
           echo "Finding latest successful Odoo backup..."
 
           RUN_ID=$(gh run list \
@@ -35,8 +40,13 @@ jobs:
           fi
 
           echo "Latest backup Run ID: $RUN_ID"
+
           echo "RUN_ID=$RUN_ID" >> "$GITHUB_OUTPUT"
 
+
+      # =========================================================
+      # 2. Download backup
+      # =========================================================
       - name: Download latest backup
         id: download_backup
         env:
@@ -44,6 +54,8 @@ jobs:
           REPO: ${{ github.repository }}
           RUN_ID: ${{ steps.find_backup.outputs.RUN_ID }}
         run: |
+          set -e
+
           RESTORE_DIR="/tmp/odoo-restore-${RUN_ID}"
 
           sudo rm -rf "$RESTORE_DIR"
@@ -58,15 +70,22 @@ jobs:
             --name odoo-backup \
             --dir "$RESTORE_DIR"
 
+          echo ""
           echo "Downloaded backup:"
           ls -lh "$RESTORE_DIR"
 
           echo "RESTORE_DIR=$RESTORE_DIR" >> "$GITHUB_OUTPUT"
-          
-      - name: Verify latest backup
+
+
+      # =========================================================
+      # 3. Verify backup
+      # =========================================================
+      - name: Verify backup
         env:
           RESTORE_DIR: ${{ steps.download_backup.outputs.RESTORE_DIR }}
         run: |
+          set -e
+
           BACKUP=$(find "$RESTORE_DIR" \
             -type f \
             -name 'kosarTest_backup_*.tar.gz' \
@@ -80,26 +99,34 @@ jobs:
             exit 1
           fi
 
-          echo "Latest backup selected:"
+          echo "Selected backup:"
           ls -lh "$BACKUP"
 
           echo "BACKUP=$BACKUP" >> "$GITHUB_ENV"
 
+
+      # =========================================================
+      # 4. Extract backup
+      # =========================================================
       - name: Extract backup
         run: |
-          sudo rm -rf /tmp/odoo_restore_work
-          sudo mkdir -p /tmp/odoo_restore_work
+          set -e
 
-          echo "Extracting:"
+          WORK_DIR="/tmp/odoo_restore_work"
+
+          sudo rm -rf "$WORK_DIR"
+          sudo mkdir -p "$WORK_DIR"
+
+          echo "Extracting backup:"
           echo "$BACKUP"
 
           sudo tar -xzf "$BACKUP" \
-            -C /tmp/odoo_restore_work
+            -C "$WORK_DIR"
 
           echo ""
           echo "=== Backup structure ==="
 
-          sudo find /tmp/odoo_restore_work \
+          sudo find "$WORK_DIR" \
             -maxdepth 8 \
             -printf '%y %p\n' \
             | sort
@@ -107,199 +134,113 @@ jobs:
           echo ""
           echo "=== Backup sizes ==="
 
-          sudo du -ah /tmp/odoo_restore_work \
+          sudo du -ah "$WORK_DIR" \
             | sort -h \
             | tail -30
 
-      - name: Restore database
+
+      # =========================================================
+      # 5. Validate backup contents
+      # =========================================================
+      - name: Validate backup contents
         run: |
-          echo "=== Database Restore Started ==="
+          set -e
 
-          DUMP="/tmp/odoo_restore_work/kosarTest.dump"
-          DB_NAME="kosarRestoreTest"
+          WORK_DIR="/tmp/odoo_restore_work"
 
-          echo "Stopping Odoo..."
-          sudo systemctl stop odoo
+          DUMP="$WORK_DIR/kosarTest.dump"
+          FILESTORE="$WORK_DIR/kosarTest-filestore.tar.gz"
+          ODOO_CONF="$WORK_DIR/odoo.conf"
 
-          echo "Checking existing database..."
-          sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='$DB_NAME'" | grep -q 1
+          echo "Checking database dump..."
 
-          if [ $? -eq 0 ]; then
-            echo "Terminating connections to $DB_NAME..."
-            sudo -u postgres psql -c \
-              "SELECT pg_terminate_backend(pid)
-               FROM pg_stat_activity
-               WHERE datname='$DB_NAME'
-               AND pid <> pg_backend_pid();"
-
-            echo "Dropping existing database..."
-            sudo -u postgres dropdb "$DB_NAME"
+          if [ ! -f "$DUMP" ]; then
+            echo "ERROR: Database dump not found."
+            exit 1
           fi
 
-          echo "Creating database..."
-          sudo -u postgres createdb -O odooadmin "$DB_NAME"
+          echo "Checking filestore backup..."
 
-          echo "Restoring database..."
-          sudo -u postgres pg_restore \
-            --dbname="$DB_NAME" \
-            --no-owner \
-            --no-acl \
-            "$DUMP"
+          if [ ! -f "$FILESTORE" ]; then
+            echo "ERROR: Filestore backup not found."
+            exit 1
+          fi
 
-          echo "Checking restored database..."
+          echo "Checking Odoo configuration..."
 
-          sudo -u postgres psql -d "$DB_NAME" \
-            -c "SELECT count(*) AS users FROM res_users;"
+          if [ ! -f "$ODOO_CONF" ]; then
+            echo "WARNING: odoo.conf not found."
+          fi
 
-          sudo -u postgres psql -d "$DB_NAME" \
-            -c "SELECT count(*) AS attachments FROM ir_attachment;"
+          echo ""
+          echo "Database dump:"
+          ls -lh "$DUMP"
 
-          echo "=== Database Restore Completed ==="
+          echo ""
+          echo "Filestore:"
+          ls -lh "$FILESTORE"
 
-      - name: Restore database test
+          echo ""
+          echo "Backup contents validated."
+
+
+      # =========================================================
+      # 6. Restore test database
+      # =========================================================
+      - name: Restore test database
         run: |
-          echo "=== Preparing test database ==="
+          set -e
 
-          sudo -u postgres psql -d postgres -c \
+          DB_NAME="kosarRestoreTest"
+          DUMP="/tmp/odoo_restore_work/kosarTest.dump"
+
+          echo "=== Preparing PostgreSQL ==="
+
+          echo "Stopping Odoo..."
+
+          sudo systemctl stop odoo || true
+
+          echo "Checking PostgreSQL..."
+
+          sudo systemctl is-active postgresql
+
+          echo ""
+          echo "Checking PostgreSQL role..."
+
+          sudo -u postgres psql -tAc \
+            "SELECT 1 FROM pg_roles WHERE rolname='odooadmin';"
+
+          if ! sudo -u postgres psql -tAc \
+            "SELECT 1 FROM pg_roles WHERE rolname='odooadmin';" | grep -q 1
+          then
+            echo "ERROR: PostgreSQL role odooadmin does not exist."
+            exit 1
+          fi
+
+          echo ""
+          echo "Terminating existing connections..."
+
+          sudo -u postgres psql -c \
             "SELECT pg_terminate_backend(pid)
              FROM pg_stat_activity
-             WHERE datname = 'kosarRestoreTest'
+             WHERE datname='$DB_NAME'
              AND pid <> pg_backend_pid();"
+
+          echo ""
+          echo "Dropping old test database..."
 
           sudo -u postgres dropdb \
             --if-exists \
-            kosarRestoreTest
+            "$DB_NAME"
 
-          sudo -u postgres createdb \
-            -O odooadmin \
-            kosarRestoreTest
-
-          echo "=== Restoring database ==="
-
-          sudo -u postgres pg_restore \
-            --dbname=kosarRestoreTest \
-            --no-owner \
-            --no-acl \
-            /tmp/odoo_restore_work/kosarTest.dump
-
-          echo "=== Database restore completed ==="
-
-          echo "=== Checking restored database ==="
-
-          sudo -u postgres psql \
-            -d kosarRestoreTest \
-            -c "SELECT count(*) AS users FROM res_users;"
-
-          sudo -u postgres psql \
-            -d kosarRestoreTest \
-            -c "SELECT count(*) AS attachments FROM ir_attachment;"
-
-      - name: Show restore environment
-        run: |
-          echo "Runner:"
-          hostname
-
-          echo "User:"
-          whoami
-
-          echo "Odoo service:"
-          systemctl is-active odoo || true
-
-          echo "PostgreSQL:"
-          systemctl is-active postgresql || true
-
-      - name: Restore PostgreSQL database
-        shell: bash
-        run: |
-          set -e
-      
-          DB_NAME="kosarTest"
-          DUMP="/tmp/odoo_restore_work/kosarTest.dump"
-      
-          echo "Checking dump..."
-          ls -lh "$DUMP"
-      
-          echo "Checking PostgreSQL..."
-          sudo -u postgres psql -c "SELECT version();"
-      
-          echo "Dropping old test database if exists..."
-          sudo -u postgres dropdb --if-exists "$DB_NAME"
-      
-          echo "Creating database..."
-          sudo -u postgres createdb "$DB_NAME"
-      
-          echo "Restoring database..."
-          sudo -u postgres pg_restore \
-            --dbname="$DB_NAME" \
-            --no-owner \
-            --no-acl \
-            "$DUMP"
-      
-          echo "Checking restored database..."
-          sudo -u postgres psql \
-            -d "$DB_NAME" \
-            -c "SELECT current_database();"
-      
-          echo "Checking tables..."
-          sudo -u postgres psql \
-            -d "$DB_NAME" \
-            -c "SELECT count(*) AS table_count FROM information_schema.tables WHERE table_schema='public';"
-      
-          echo "PostgreSQL restore completed successfully."
-
-      - name: Prepare PostgreSQL restore
-        run: |
-          echo "Preparing PostgreSQL restore..."
-
-          sudo systemctl stop odoo
-
-          sudo -u postgres psql -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = 'kosarTest' AND pid <> pg_backend_pid();" || true
-
-          sudo -u postgres psql -c "DROP DATABASE IF EXISTS \"kosarTest\";"
-          sudo -u postgres psql -c "CREATE DATABASE \"kosarTest\" OWNER odoo;"
-
-          echo "PostgreSQL database prepared successfully."
-      - name: Restore database
-        run: |
-          echo "=== Database Restore Started ==="
-
-          DUMP="/tmp/odoo_restore_work/kosarTest.dump"
-          DB_NAME="kosarRestoreTest"
-
-          echo "Checking dump..."
-          sudo ls -lh "$DUMP"
-
-          echo "Stopping Odoo..."
-          sudo systemctl stop odoo
-
-          echo "Checking existing database..."
-
-          if sudo -u postgres psql -tAc \
-            "SELECT 1 FROM pg_database WHERE datname='$DB_NAME'" | grep -q 1
-          then
-            echo "Database $DB_NAME exists."
-
-            echo "Terminating existing connections..."
-
-            sudo -u postgres psql -c \
-              "SELECT pg_terminate_backend(pid)
-               FROM pg_stat_activity
-               WHERE datname='$DB_NAME'
-               AND pid <> pg_backend_pid();"
-
-            echo "Dropping existing database..."
-
-            sudo -u postgres dropdb "$DB_NAME"
-          else
-            echo "Database $DB_NAME does not exist."
-          fi
-
-          echo "Creating database..."
+          echo ""
+          echo "Creating test database..."
 
           sudo -u postgres createdb \
             -O odooadmin \
             "$DB_NAME"
 
+          echo ""
           echo "Restoring database..."
 
           sudo -u postgres pg_restore \
@@ -308,24 +249,188 @@ jobs:
             --no-acl \
             "$DUMP"
 
-          echo "Checking restored users..."
+          echo ""
+          echo "=== Database restore completed ==="
+
+
+      # =========================================================
+      # 7. Validate restored database
+      # =========================================================
+      - name: Validate restored database
+        run: |
+          set -e
+
+          DB_NAME="kosarRestoreTest"
+
+          echo "Checking database..."
+
+          sudo -u postgres psql \
+            -d "$DB_NAME" \
+            -c "SELECT current_database();"
+
+          echo ""
+          echo "Checking users..."
 
           sudo -u postgres psql \
             -d "$DB_NAME" \
             -c "SELECT count(*) AS users FROM res_users;"
 
-          echo "Checking restored attachments..."
+          echo ""
+          echo "Checking attachments..."
 
           sudo -u postgres psql \
             -d "$DB_NAME" \
             -c "SELECT count(*) AS attachments FROM ir_attachment;"
 
+          echo ""
+          echo "Checking tables..."
+
+          sudo -u postgres psql \
+            -d "$DB_NAME" \
+            -c "
+              SELECT count(*) AS table_count
+              FROM information_schema.tables
+              WHERE table_schema='public';
+            "
+
+          echo ""
+          echo "Database validation completed."
+
+
+      # =========================================================
+      # 8. Restore filestore
+      # =========================================================
+      - name: Restore filestore
+        run: |
+          set -e
+
+          DB_NAME="kosarRestoreTest"
+          FILESTORE="/tmp/odoo_restore_work/kosarTest-filestore.tar.gz"
+
+          ODOO_DATA_DIR=$(sudo -u postgres psql \
+            -d "$DB_NAME" \
+            -tAc "
+              SELECT value
+              FROM ir_config_parameter
+              WHERE key='data_dir'
+              LIMIT 1;
+            " | xargs || true)
+
+          echo "Database data_dir:"
+          echo "$ODOO_DATA_DIR"
+
+          if [ -z "$ODOO_DATA_DIR" ]; then
+            echo "WARNING: data_dir not found in database."
+            echo "Filestore restore will be skipped."
+            exit 0
+          fi
+
+          FILESTORE_DIR="$ODOO_DATA_DIR/filestore/$DB_NAME"
+
+          echo ""
+          echo "Filestore destination:"
+          echo "$FILESTORE_DIR"
+
+          sudo rm -rf "$FILESTORE_DIR"
+
+          sudo mkdir -p "$FILESTORE_DIR"
+
+          sudo tar -xzf "$FILESTORE" \
+            -C "$ODOO_DATA_DIR/filestore"
+
+          echo ""
+          echo "=== Filestore restored ==="
+
+          sudo find "$ODOO_DATA_DIR/filestore" \
+            -maxdepth 2 \
+            -type d \
+            | head -20
+
+
+      # =========================================================
+      # 9. Show environment
+      # =========================================================
+      - name: Show restore environment
+        run: |
+          echo "======================================"
+          echo "Restore Environment"
+          echo "======================================"
+
+          echo ""
+          echo "Runner:"
+          hostname
+
+          echo ""
+          echo "User:"
+          whoami
+
+          echo ""
+          echo "PostgreSQL:"
+          systemctl is-active postgresql || true
+
+          echo ""
+          echo "Odoo:"
+          systemctl is-active odoo || true
+
+          echo ""
+          echo "Test database:"
+          sudo -u postgres psql -tAc \
+            "SELECT datname FROM pg_database WHERE datname='kosarRestoreTest';"
+
+
+      # =========================================================
+      # 10. Start Odoo
+      # =========================================================
+      - name: Start Odoo
+        run: |
+          set -e
+
           echo "Starting Odoo..."
 
           sudo systemctl start odoo
 
-          echo "Checking Odoo..."
+          echo "Waiting for Odoo..."
+
+          sleep 5
+
+          echo ""
+          echo "Odoo service status:"
 
           sudo systemctl is-active odoo
 
-          echo "=== Database Restore Completed ==="
+          echo ""
+          echo "Odoo service details:"
+
+          sudo systemctl --no-pager --full status odoo | head -40
+
+
+      # =========================================================
+      # 11. Final health check
+      # =========================================================
+      - name: Odoo health check
+        run: |
+          set -e
+
+          echo "Checking Odoo process..."
+
+          if ! sudo systemctl is-active --quiet odoo; then
+            echo "ERROR: Odoo service is not active."
+            sudo journalctl -u odoo \
+              --no-pager \
+              -n 100
+            exit 1
+          fi
+
+          echo ""
+          echo "Checking Odoo port..."
+
+          if sudo ss -lntp | grep -q ':8069'; then
+            echo "Odoo is listening on port 8069."
+          else
+            echo "WARNING: Odoo is not listening on port 8069."
+          fi
+
+          echo ""
+          echo "======================================"
+          echo "ODOO RESTORE TEST SUCCESSFUL"
+          echo "======================================"
