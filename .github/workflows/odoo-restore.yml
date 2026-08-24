@@ -1,0 +1,165 @@
+
+
+name: Odoo Restore
+
+on:
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  restore:
+    runs-on: self-hosted
+
+    steps:
+      - name: Find latest backup run
+        id: find_backup
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          echo "Finding latest successful Odoo backup..."
+
+          RUN_ID=$(gh run list \
+            --repo "$REPO" \
+            --workflow "odoo-backup.yml" \
+            --status success \
+            --limit 1 \
+            --json databaseId \
+            --jq '.[0].databaseId')
+
+          if [ -z "$RUN_ID" ]; then
+            echo "ERROR: No successful backup run found."
+            exit 1
+          fi
+
+          echo "Latest backup Run ID: $RUN_ID"
+          echo "RUN_ID=$RUN_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Download latest backup
+        id: download_backup
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ steps.find_backup.outputs.RUN_ID }}
+        run: |
+          RESTORE_DIR="/tmp/odoo-restore-${RUN_ID}"
+
+          sudo rm -rf "$RESTORE_DIR"
+          sudo mkdir -p "$RESTORE_DIR"
+          sudo chown runner:runner "$RESTORE_DIR"
+
+          echo "Restore directory:"
+          echo "$RESTORE_DIR"
+
+          gh run download "$RUN_ID" \
+            --repo "$REPO" \
+            --name odoo-backup \
+            --dir "$RESTORE_DIR"
+
+          echo "Downloaded backup:"
+          ls -lh "$RESTORE_DIR"
+
+          echo "RESTORE_DIR=$RESTORE_DIR" >> "$GITHUB_OUTPUT"
+          
+      - name: Verify latest backup
+        env:
+          RESTORE_DIR: ${{ steps.download_backup.outputs.RESTORE_DIR }}
+        run: |
+          BACKUP=$(find "$RESTORE_DIR" \
+            -type f \
+            -name 'kosarTest_backup_*.tar.gz' \
+            -printf '%T@ %p\n' \
+            | sort -nr \
+            | head -1 \
+            | cut -d' ' -f2-)
+
+          if [ -z "$BACKUP" ]; then
+            echo "ERROR: Backup archive not found."
+            exit 1
+          fi
+
+          echo "Latest backup selected:"
+          ls -lh "$BACKUP"
+
+          echo "BACKUP=$BACKUP" >> "$GITHUB_ENV"
+
+      - name: Extract backup
+        run: |
+          sudo rm -rf /tmp/odoo_restore_work
+          sudo mkdir -p /tmp/odoo_restore_work
+
+          echo "Extracting:"
+          echo "$BACKUP"
+
+          sudo tar -xzf "$BACKUP" \
+            -C /tmp/odoo_restore_work
+
+          echo ""
+          echo "=== Backup structure ==="
+
+          sudo find /tmp/odoo_restore_work \
+            -maxdepth 8 \
+            -printf '%y %p\n' \
+            | sort
+
+          echo ""
+          echo "=== Backup sizes ==="
+
+          sudo du -ah /tmp/odoo_restore_work \
+            | sort -h \
+            | tail -30
+
+      - name: Restore database test
+        run: |
+          echo "=== Preparing test database ==="
+
+          sudo -u postgres psql -d postgres -c \
+            "SELECT pg_terminate_backend(pid)
+             FROM pg_stat_activity
+             WHERE datname = 'kosarRestoreTest'
+             AND pid <> pg_backend_pid();"
+
+          sudo -u postgres dropdb \
+            --if-exists \
+            kosarRestoreTest
+
+          sudo -u postgres createdb \
+            -O odooadmin \
+            kosarRestoreTest
+
+          echo "=== Restoring database ==="
+
+          sudo -u postgres pg_restore \
+            --dbname=kosarRestoreTest \
+            --no-owner \
+            --no-acl \
+            /tmp/odoo_restore_work/kosarTest.dump
+
+          echo "=== Database restore completed ==="
+
+          echo "=== Checking restored database ==="
+
+          sudo -u postgres psql \
+            -d kosarRestoreTest \
+            -c "SELECT count(*) AS users FROM res_users;"
+
+          sudo -u postgres psql \
+            -d kosarRestoreTest \
+            -c "SELECT count(*) AS attachments FROM ir_attachment;"
+
+      - name: Show restore environment
+        run: |
+          echo "Runner:"
+          hostname
+
+          echo "User:"
+          whoami
+
+          echo "Odoo service:"
+          systemctl is-active odoo || true
+
+          echo "PostgreSQL:"
+          systemctl is-active postgresql || true
