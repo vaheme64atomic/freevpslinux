@@ -252,6 +252,85 @@ jobs:
           echo ""
           echo "=== Database restore completed ==="
 
+      # =========================================================
+      # 6.1 Fix PostgreSQL ownership and privileges
+      # =========================================================
+      - name: Fix restored database permissions
+        run: |
+          set -e
+
+          DB_NAME="kosarRestoreTest"
+
+          echo "======================================"
+          echo "Fixing PostgreSQL permissions"
+          echo "======================================"
+
+          echo ""
+          echo "Granting database privileges..."
+
+          sudo -u postgres psql \
+            -d "$DB_NAME" \
+            -c "GRANT ALL PRIVILEGES ON DATABASE \"$DB_NAME\" TO odooadmin;"
+
+          echo ""
+          echo "Granting schema privileges..."
+
+          sudo -u postgres psql \
+            -d "$DB_NAME" \
+            -c "GRANT ALL ON SCHEMA public TO odooadmin;"
+
+          echo ""
+          echo "Granting table privileges..."
+
+          sudo -u postgres psql \
+            -d "$DB_NAME" \
+            -c "GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO odooadmin;"
+
+          echo ""
+          echo "Granting sequence privileges..."
+
+          sudo -u postgres psql \
+            -d "$DB_NAME" \
+            -c "GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO odooadmin;"
+
+          echo ""
+          echo "Granting function privileges..."
+
+          sudo -u postgres psql \
+            -d "$DB_NAME" \
+            -c "GRANT ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA public TO odooadmin;"
+
+          echo ""
+          echo "Setting default privileges..."
+
+          sudo -u postgres psql \
+            -d "$DB_NAME" \
+            -c "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO odooadmin;"
+
+          sudo -u postgres psql \
+            -d "$DB_NAME" \
+            -c "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO odooadmin;"
+
+          sudo -u postgres psql \
+            -d "$DB_NAME" \
+            -c "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON FUNCTIONS TO odooadmin;"
+
+          echo ""
+          echo "======================================"
+          echo "PostgreSQL permissions fixed"
+          echo "======================================"
+
+          echo ""
+          echo "Testing access to ir_module_module..."
+
+          PGPASSWORD='odooadmin' psql \
+            -h 127.0.0.1 \
+            -U odooadmin \
+            -d "$DB_NAME" \
+            -c "SELECT COUNT(*) FROM ir_module_module;"
+
+          echo ""
+          echo "Database permission test PASSED."
 
       # =========================================================
       # 7. Validate restored database
