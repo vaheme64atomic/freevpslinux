@@ -1,4 +1,4 @@
-name: Linux Odoo Lab
+name: Linux Odoo Lab with openvpn
 
 on:
   workflow_dispatch:
